@@ -4,21 +4,19 @@ import torch as T
 import torch.nn as nn
 
 from torch.utils.checkpoint import checkpoint
+
 ### learnable sigmoid function. Directly affects gating fuctionality
 class ShiftedSigmoid(nn.Module):
     def __init__(self):
         super(ShiftedSigmoid, self).__init__()
 
         self.shift = T.pi
-        
-        # learns how much to bound gating weights
-        self.amp = nn.Parameter(T.tensor(1.1))
 
         # learns how smooth weights ramp up
         self.smoothness = nn.Parameter(T.tensor(1.5))
 
     def forward(self, x):
-        y = self.amp * nn.Sigmoid()(self.smoothness * x - self.shift)
+        y = nn.Sigmoid()(self.smoothness * x - self.shift)
         return y
 
 class RecurrentBlock(nn.Module):
