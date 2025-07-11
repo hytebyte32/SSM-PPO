@@ -92,7 +92,7 @@ class RecurrentBlock(nn.Module):
             self.output_gate.weight.copy_(output_gate_weights)
 
 
-        # adding shifted sigmoid activation to 
+        # adding shifted sigmoid activation to gates
         self.input_gate = nn.Sequential(
             input_gate,
             ShiftedSigmoid()
@@ -212,9 +212,9 @@ class RecurrentNetwork(nn.Module):
             state_space_size,
             input_size,
             batch_size,
+            device,
             chkpt_dir='temp/ppo',
-            network_name='ssm',
-            device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+            network_name='ssm'
             ):
         super(RecurrentNetwork, self).__init__()
 
@@ -234,7 +234,7 @@ class RecurrentNetwork(nn.Module):
         # transfer all parameters into gpu if possible
         self.to(device=self.device)
 
-    def recurrenct_step(self, x_t):
+    def recurrent_step(self, x_t):
         # only being passed through linear layers so batch safe
         *inputs_t, C_t, output_weights = self.recurrent_block.pre_process_inputs(x_t) # shaoe: (B, L, E or S)
         x_gated_t = inputs_t[0]
@@ -256,7 +256,7 @@ class RecurrentNetwork(nn.Module):
         return hidden_states, y_t
     
     def forward(self, x_t):
-        output = checkpoint(self.recurrenct_step, x_t, use_reentrant=True)
+        output = checkpoint(self.recurrent_step, x_t, use_reentrant=True)
         return output
         
     def predict(self, y_t):
