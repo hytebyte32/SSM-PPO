@@ -61,5 +61,5 @@ Maps the processed output to the next-step prediction.
 
 - All core matrices (state transition, hidden state, gates) are **complex-valued and learnable**.
 - Gating and discretization are controlled by **custom, learnable activations**.
-- Output processing explicitly separates and embeds **magnitude and phase** information.
+- Output processing converts complex values to real by explicitly seperating and embedding **magnitude and phase** information.
 - Designed for both **full sequence** and **online processing**. Supports **batch operations** and **checkpointing**.
