@@ -64,6 +64,8 @@ Maps the processed output to the next-step prediction.
 - Output processing converts complex values to real by explicitly seperating and embedding **magnitude and phase** information.
 - Designed for both **full sequence** and **online processing**. Supports **batch operations** and **checkpointing**.
 
+---
+
 > **Inspired by**  
 > *Albert Gu, Tri Dao, et al.*  
 > [**Mamba: Linear-Time Sequence Modeling with Selective State Spaces**](https://arxiv.org/abs/2312.00752)  
