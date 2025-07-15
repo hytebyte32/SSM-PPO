@@ -20,12 +20,6 @@ The **SSM-PPO** model implements a custom recurrent neural network block inspire
 
 ---
 
-## Checkpointing
-
-Uses **PyTorch checkpointing** for memory efficiency.
-
----
-
 ## Forward Pass
 
 Processes inputs sequentially, updating the hidden state and producing outputs at each step.
