@@ -25,6 +25,7 @@ class RecurrentBlock(nn.Module):
             embedding_size,
             state_space_size,
             input_size,
+            output_size,
             batch_size,
             device
             ):
@@ -136,16 +137,22 @@ class RecurrentBlock(nn.Module):
             nn.Linear(embedding_size, embedding_size//2, dtype=T.float32),
             nn.LayerNorm(embedding_size//2),
             nn.SiLU(),
-            nn.Linear(embedding_size//2, input_size, dtype=T.float32),
+            nn.Linear(embedding_size//2, output_size, dtype=T.float32),
         )
 
     # calculates the recurrent hidden state
-    def forward(self, x_gated_t, delta_t, B_t, h_prev):
+    def forward(self, x_t, h_prev):
+        
+        x_gated_t, delta_t, B_t, C_t, output_weights = self.pre_process_inputs(x_t)
+
         A_prime_t = T.exp(-T.einsum("dn,bd->bdn", self.state_transition_matrix, delta_t))
         B_prime_t = T.einsum("bn,bd->bdn", B_t, delta_t)
         h_prime_t = T.einsum("bdn,bdn->bdn", A_prime_t, h_prev) + T.einsum("bdn,bd->bdn", B_prime_t, x_gated_t)
         
-        return h_prime_t
+        y_t = output_weights * T.einsum("bn,bdn->bd", C_t, h_prime_t) + (1 - output_weights) * x_gated_t
+        y_t = self.post_process_output(y_t)
+
+        return h_prime_t, y_t
 
     def post_process_output(self, y_t):
         # features derived from complex output y_t
@@ -211,6 +218,7 @@ class RecurrentNetwork(nn.Module):
             embedding_size,
             state_space_size,
             input_size,
+            output_size,
             batch_size,
             device,
             chkpt_dir='temp/ppo',
@@ -229,34 +237,47 @@ class RecurrentNetwork(nn.Module):
         # create save dir
         self.checkpoint_file = os.path.join(chkpt_dir, network_name)
 
-        self.recurrent_block = RecurrentBlock(embedding_size=embedding_size, state_space_size=state_space_size, input_size=input_size, batch_size=batch_size, device=self.device)
+        self.recurrent_block = RecurrentBlock(embedding_size=embedding_size, 
+            state_space_size=state_space_size, 
+            input_size=input_size, 
+            batch_size=batch_size, 
+            output_size=output_size, 
+            device=self.device
+        )
 
         # transfer all parameters into gpu if possible
         self.to(device=self.device)
 
-    def recurrent_step(self, x_t):
+    def recurrent_step(self, x_t, h_t=None):
         # only being passed through linear layers so batch safe
-        *inputs_t, C_t, output_weights = self.recurrent_block.pre_process_inputs(x_t) # shaoe: (B, L, E or S)
-        x_gated_t = inputs_t[0]
-        input_permuted_t = [x.permute(1,0,2) for x in inputs_t] # converts to (L, B, E/S)
-        h_prev = self.recurrent_block.hidden_state_matrix
-        
-        hidden_states = []
+        #*inputs_t, C_t, output_weights = self.recurrent_block.pre_process_inputs(x_t) # shaoe: (B, L, E or S)
+        #x_gated_t = inputs_t[0]
+        #input_permuted_t = [x.permute(1,0,2) for x in inputs_t] # converts to (L, B, E/S)
+        x_permuted_t = x_t.permute(1,0,2)
 
-        for input_t in zip(*input_permuted_t):
+        if h_t is None:
+            h_prev = self.recurrent_block.hidden_state_matrix
+        else:
+            h_prev = h_t
+
+        hidden_states = []
+        outputs = []
+
+        for x in x_permuted_t:
             #h_prev = checkpoint(self.recurrent_block.forward, use_reentrant=True)(*input_t, h_prev)
-            h_prev = self.recurrent_block(*input_t, h_prev)
+            h_prev, y_t = self.recurrent_block(x, h_prev)
             hidden_states.append(h_prev)
+            outputs.append(y_t)
 
         # construct outputs
-        hidden_states = T.stack(tensors=hidden_states).permute(1,0,2,3).to(device=self.device)        
-        y_t = output_weights * T.einsum("bln,bldn->bld", C_t, hidden_states) + (1 - output_weights) * x_gated_t
-        y_t = self.recurrent_block.post_process_output(y_t)
+        hidden_states = T.stack(tensors=hidden_states).permute(1,0,2,3).to(device=self.device)
+        outputs = T.stack(tensors=outputs).permute(1,0,2).to(device=self.device)      
+        
 
-        return hidden_states, y_t
+        return hidden_states, outputs
     
-    def forward(self, x_t):
-        output = checkpoint(self.recurrent_step, x_t, use_reentrant=True)
+    def forward(self, x_t, h_t):
+        output = checkpoint(self.recurrent_step, x_t, h_t, use_reentrant=True)
         return output
         
     def predict(self, y_t):
