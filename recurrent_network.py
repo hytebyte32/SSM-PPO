@@ -276,14 +276,12 @@ class RecurrentNetwork(nn.Module):
 
         return hidden_states, outputs
     
-    def forward(self, x_t, h_t):
-        output = checkpoint(self.recurrent_step, x_t, h_t, use_reentrant=True)
-        return output
-        
-    def predict(self, y_t):
-        y_pred = self.recurrent_block.state_prediction(y_t)
-        return y_pred
-    
+    def forward(self, x_t, h_t, embeddings_only=True):
+        h_out, y_out = checkpoint(self.recurrent_step, x_t, h_t, use_reentrant=True)
+        if embeddings_only is True:
+            return h_out, y_out
+        else:
+            return h_out, self.recurrent_block.state_prediction(y_out)    
 
     def save_checkpoint(self):
         T.save(self.state_dict(), self.checkpoint_file)
