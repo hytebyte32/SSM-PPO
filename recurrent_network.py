@@ -2,8 +2,10 @@ import os
 import numpy as np
 import torch as T
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torch.utils.checkpoint import checkpoint
+
 
 ### learnable sigmoid function. Directly affects gating fuctionality
 class ShiftedSigmoid(nn.Module):
@@ -57,7 +59,7 @@ class RecurrentBlock(nn.Module):
         self.hidden_state_matrix = self.construct_complex_matrix(
             real_values=self.real_hidden_matrix,
             img_values=self.img_hidden_matrix,
-            duplicate_batchwise=True
+            #duplicate_batchwise=True
         )
 
         ### weight 
@@ -141,18 +143,13 @@ class RecurrentBlock(nn.Module):
         )
 
     # calculates the recurrent hidden state
-    def forward(self, x_t, h_prev):
+    def forward(self, x_gated_t, delta_t, B_t, h_prev):
         
-        x_gated_t, delta_t, B_t, C_t, output_weights = self.pre_process_inputs(x_t)
+        A_prime_t = T.exp(-delta_t.unsqueeze(2) * self.state_transition_matrix.unsqueeze(0))
+        B_prime_t = delta_t.unsqueeze(2) * B_t.unsqueeze(1) 
+        h_prime_t = A_prime_t * h_prev + B_prime_t * x_gated_t.unsqueeze(-1)
 
-        A_prime_t = T.exp(-T.einsum("dn,bd->bdn", self.state_transition_matrix, delta_t))
-        B_prime_t = T.einsum("bn,bd->bdn", B_t, delta_t)
-        h_prime_t = T.einsum("bdn,bdn->bdn", A_prime_t, h_prev) + T.einsum("bdn,bd->bdn", B_prime_t, x_gated_t)
-        
-        y_t = output_weights * T.einsum("bn,bdn->bd", C_t, h_prime_t) + (1 - output_weights) * x_gated_t
-        y_t = self.post_process_output(y_t)
-
-        return h_prime_t, y_t
+        return h_prime_t
 
     def post_process_output(self, y_t):
         # features derived from complex output y_t
@@ -169,9 +166,7 @@ class RecurrentBlock(nn.Module):
         phase_proj = self.phase_embedding(phase_t)
         combined = mag_proj * phase_proj
         
-        
         y_prime_t = self.output_compression(combined)
-        #y_prime_t = self.output_compression(combined)
 
         return y_prime_t
     
@@ -198,11 +193,8 @@ class RecurrentBlock(nn.Module):
 
         return x_gated_t, delta_t, B_t, C_t, output_weights
     
-    def construct_complex_matrix(self, real_values, img_values, duplicate_batchwise=False): 
+    def construct_complex_matrix(self, real_values, img_values): 
         complex_matrix = T.exp(-T.exp(real_values))*T.exp(img_values * 1j)
-
-        if duplicate_batchwise:
-            complex_matrix = complex_matrix.unsqueeze(0).expand(self.batch_size, -1, -1)
 
         return complex_matrix
     
@@ -227,6 +219,7 @@ class RecurrentNetwork(nn.Module):
         super(RecurrentNetwork, self).__init__()
 
         self.device = device
+        self.state_space_size = state_space_size
 
         '''
         embedding size: the size of the expanded input feature space
@@ -248,40 +241,63 @@ class RecurrentNetwork(nn.Module):
         # transfer all parameters into gpu if possible
         self.to(device=self.device)
 
-    def recurrent_step(self, x_t, h_t=None):
-        # only being passed through linear layers so batch safe
-        #*inputs_t, C_t, output_weights = self.recurrent_block.pre_process_inputs(x_t) # shaoe: (B, L, E or S)
-        #x_gated_t = inputs_t[0]
-        #input_permuted_t = [x.permute(1,0,2) for x in inputs_t] # converts to (L, B, E/S)
-        x_permuted_t = x_t.permute(1,0,2)
+    def recurrent_step(self, x_t, h_t, embeddings_only):
 
-        if h_t is None:
-            h_prev = self.recurrent_block.hidden_state_matrix
-        else:
-            h_prev = h_t
-
-        hidden_states = []
-        outputs = []
-
-        for x in x_permuted_t:
-            #h_prev = checkpoint(self.recurrent_block.forward, use_reentrant=True)(*input_t, h_prev)
-            h_prev, y_t = self.recurrent_block(x, h_prev)
-            hidden_states.append(h_prev)
-            outputs.append(y_t)
-
-        # construct outputs
-        hidden_states = T.stack(tensors=hidden_states).permute(1,0,2,3).to(device=self.device)
-        outputs = T.stack(tensors=outputs).permute(1,0,2).to(device=self.device)      
+        # batch size of the current input. Used for variable batch sizes during inference and training
         
+        
+        # permute inputs to be of shape (L, B, D)
+        x_permuted_t = x_t.permute(1,0,2) 
+        inputs_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
 
-        return hidden_states, outputs
-    
-    def forward(self, x_t, h_t, embeddings_only=True):
-        h_out, y_out = checkpoint(self.recurrent_step, x_t, h_t, use_reentrant=True)
+        # preallocate memory for outputs
+        outputs = T.empty_like(input=inputs_t[0].permute(1,0,2), dtype=T.complex64, device=self.device) # (B, L, D)
+
+        for idx, input_t in enumerate(zip(*inputs_t)):
+            x_gated_t, delta_t, B_t, C_t, output_weights = input_t
+
+            # calculate hidden next hidden state
+            h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t)
+
+            # calculate output
+            y_t = output_weights * (C_t.unsqueeze(1) * h_t).sum(dim=-1) + (1 - output_weights) * x_gated_t
+            
+            # save output
+            outputs[:, idx, :] = y_t
+
+        
+        outputs = self.recurrent_block.post_process_output(outputs)
+
         if embeddings_only is True:
-            return h_out, y_out
+            return h_t, outputs
         else:
-            return h_out, self.recurrent_block.state_prediction(y_out)    
+            return h_t, self.recurrent_block.state_prediction(outputs)
+    
+    def forward(self, x_t, h_t=None, embeddings_only=True):
+        '''
+        embeddings_only: controls if raw output embeddings or usable outputs should be returned
+        '''
+        if h_t is None:
+            batch_size_t = x_t.shape[0]
+            h_in = self.recurrent_block.hidden_state_matrix.unsqueeze(0).expand(batch_size_t, -1, -1)
+        else:
+            h_in = h_t
+
+        return self.recurrent_step(x_t, h_in, embeddings_only)        
+        
+    def update_params(self):
+        '''
+        used to update initial hidden state and state transition matrix on learning step
+        '''
+        self.recurrent_block.state_transition_matrix = self.recurrent_block.construct_complex_matrix(
+            real_values=self.recurrent_block.real_transition_matrix,
+            img_values=self.recurrent_block.img_transition_matrix
+        )
+
+        self.recurrent_block.hidden_state_matrix = self.recurrent_block.construct_complex_matrix(
+            real_values=self.recurrent_block.real_hidden_matrix,
+            img_values=self.recurrent_block.img_hidden_matrix
+        )
 
     def save_checkpoint(self):
         T.save(self.state_dict(), self.checkpoint_file)
