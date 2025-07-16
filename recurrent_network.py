@@ -48,18 +48,13 @@ class RecurrentBlock(nn.Module):
         fn_hidden = lambda w: T.log(-T.log(w))
         self.real_hidden_matrix = nn.Parameter(self.initialize_weights(low=0.001, high=0.002, dims=(embedding_size, state_space_size), fn=fn_hidden))
         self.img_hidden_matrix = nn.Parameter(self.initialize_weights(low=0, high=np.pi/10, dims=(embedding_size, state_space_size)))
-
-        # constructing state transition matrix
-        self.state_transition_matrix = self.construct_complex_matrix(
-            real_values=self.real_transition_matrix,
-            img_values=self.img_transition_matrix
-        )
-        
+       
         # constructing initial hidden state
-        self.hidden_state_matrix = self.construct_complex_matrix(
-            real_values=self.real_hidden_matrix,
-            img_values=self.img_hidden_matrix,
-            #duplicate_batchwise=True
+        self.register_buffer("hidden_state_matrix", 
+            self.construct_complex_matrix(
+                real_values=self.real_hidden_matrix,
+                img_values=self.img_hidden_matrix,
+            )
         )
 
         ### weight 
@@ -78,7 +73,7 @@ class RecurrentBlock(nn.Module):
 
         # discretization matrix
         fn_discretization = lambda w:T.sqrt(1-w)
-        discretization_real = self.initialize_weights(low=0.001, high=0.002, dims=(embedding_size, embedding_size), fn=fn_discretization)
+        discretization_real = self.initialize_weights(low=0.010, high=0.002, dims=(embedding_size, embedding_size), fn=fn_discretization)
         discretization_img = self.initialize_weights(low=0, high=np.pi/10, dims=(embedding_size, embedding_size))
         discretization_weights = discretization_real * T.exp(discretization_img * 1j)
 
@@ -118,12 +113,14 @@ class RecurrentBlock(nn.Module):
 
         # embeds the output magnitude
         self.mag_embedding = nn.Linear(embedding_size, state_space_size, bias=False, dtype=T.float32)
+        self.mag_embedding.compile()
 
         # embeds the imaginary output sin, cos, and theta derived from the phase angle
         self.phase_embedding = nn.Sequential(
             nn.Linear(embedding_size*3, state_space_size, bias=False, dtype=T.float32),
             nn.Tanh()
         )
+        self.phase_embedding.compile()
 
         # compresses the output from state space size back into embedding size
         self.output_compression = nn.Sequential(
@@ -134,6 +131,8 @@ class RecurrentBlock(nn.Module):
             nn.SiLU()
         )
 
+        self.output_compression.compile()
+
         # next state prediction
         self.state_prediction = nn.Sequential(
             nn.Linear(embedding_size, embedding_size//2, dtype=T.float32),
@@ -141,11 +140,12 @@ class RecurrentBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(embedding_size//2, output_size, dtype=T.float32),
         )
+        self.state_prediction.compile()
 
     # calculates the recurrent hidden state
-    def forward(self, x_gated_t, delta_t, B_t, h_prev):
+    def forward(self, x_gated_t, delta_t, B_t, h_prev, state_transition_matrix):
         
-        A_prime_t = T.exp(-delta_t.unsqueeze(2) * self.state_transition_matrix.unsqueeze(0))
+        A_prime_t = T.exp(-delta_t.unsqueeze(2) * state_transition_matrix.unsqueeze(0))
         B_prime_t = delta_t.unsqueeze(2) * B_t.unsqueeze(1) 
         h_prime_t = A_prime_t * h_prev + B_prime_t * x_gated_t.unsqueeze(-1)
 
@@ -241,7 +241,7 @@ class RecurrentNetwork(nn.Module):
         # transfer all parameters into gpu if possible
         self.to(device=self.device)
 
-    def recurrent_step(self, x_t, h_t, embeddings_only):
+    def recurrent_step(self, x_t, h_t, embeddings_only, state_transition_matrix):
 
         # batch size of the current input. Used for variable batch sizes during inference and training
         
@@ -257,7 +257,7 @@ class RecurrentNetwork(nn.Module):
             x_gated_t, delta_t, B_t, C_t, output_weights = input_t
 
             # calculate hidden next hidden state
-            h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t)
+            h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t, state_transition_matrix)
 
             # calculate output
             y_t = output_weights * (C_t.unsqueeze(1) * h_t).sum(dim=-1) + (1 - output_weights) * x_gated_t
@@ -277,27 +277,25 @@ class RecurrentNetwork(nn.Module):
         '''
         embeddings_only: controls if raw output embeddings or usable outputs should be returned
         '''
-        if h_t is None:
-            batch_size_t = x_t.shape[0]
-            h_in = self.recurrent_block.hidden_state_matrix.unsqueeze(0).expand(batch_size_t, -1, -1)
-        else:
-            h_in = h_t
-
-        return self.recurrent_step(x_t, h_in, embeddings_only)        
-        
-    def update_params(self):
-        '''
-        used to update initial hidden state and state transition matrix on learning step
-        '''
-        self.recurrent_block.state_transition_matrix = self.recurrent_block.construct_complex_matrix(
+        state_transition_matrix = self.recurrent_block.construct_complex_matrix(
             real_values=self.recurrent_block.real_transition_matrix,
             img_values=self.recurrent_block.img_transition_matrix
         )
+        if h_t is None:
+            batch_size_t = x_t.shape[0]
+            h_in = self.recurrent_block.construct_complex_matrix(
+                real_values=self.recurrent_block.real_hidden_matrix,
+                img_values=self.recurrent_block.img_hidden_matrix,
+            )
+            
+            h_in = h_in.unsqueeze(0).expand(batch_size_t, -1, -1)
+        else:
+            h_in = h_t
 
-        self.recurrent_block.hidden_state_matrix = self.recurrent_block.construct_complex_matrix(
-            real_values=self.recurrent_block.real_hidden_matrix,
-            img_values=self.recurrent_block.img_hidden_matrix
-        )
+        output = self.recurrent_step(x_t, h_in, embeddings_only, state_transition_matrix)
+        #output = checkpoint(self.recurrent_step, x_t, h_in, embeddings_only)
+        
+        return output
 
     def save_checkpoint(self):
         T.save(self.state_dict(), self.checkpoint_file)
