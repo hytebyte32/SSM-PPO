@@ -2,8 +2,6 @@ import os
 import numpy as np
 import torch as T
 import torch.nn as nn
-import torch.nn.functional as F
-
 from torch.utils.checkpoint import checkpoint
 
 
@@ -41,21 +39,13 @@ class RecurrentBlock(nn.Module):
         
         ### learnable magnitude and phase parameters for state transition matrix
         fn_transition = lambda w: T.log(-T.log(w))
-        self.real_transition_matrix = nn.Parameter(self.initialize_weights(low=0.999, high=1, dims=(embedding_size, state_space_size), fn=fn_transition))
+        self.real_transition_matrix = nn.Parameter(self.initialize_weights(low=0.9, high=1, dims=(embedding_size, state_space_size), fn=fn_transition))
         self.img_transition_matrix = nn.Parameter(self.initialize_weights(low=0, high=np.pi/10, dims=(embedding_size, state_space_size)))
 
         ### learnable magnitude and phase parameters for initial hidden state   
         fn_hidden = lambda w: T.log(-T.log(w))
-        self.real_hidden_matrix = nn.Parameter(self.initialize_weights(low=0.001, high=0.002, dims=(embedding_size, state_space_size), fn=fn_hidden))
+        self.real_hidden_matrix = nn.Parameter(self.initialize_weights(low=0.1, high=0.2, dims=(embedding_size, state_space_size), fn=fn_hidden))
         self.img_hidden_matrix = nn.Parameter(self.initialize_weights(low=0, high=np.pi/10, dims=(embedding_size, state_space_size)))
-       
-        # constructing initial hidden state
-        self.register_buffer("hidden_state_matrix", 
-            self.construct_complex_matrix(
-                real_values=self.real_hidden_matrix,
-                img_values=self.img_hidden_matrix,
-            )
-        )
 
         ### weight 
         # input gate       
@@ -73,7 +63,7 @@ class RecurrentBlock(nn.Module):
 
         # discretization matrix
         fn_discretization = lambda w:T.sqrt(1-w)
-        discretization_real = self.initialize_weights(low=0.010, high=0.002, dims=(embedding_size, embedding_size), fn=fn_discretization)
+        discretization_real = self.initialize_weights(low=0.001, high=0.002, dims=(embedding_size, embedding_size), fn=fn_discretization)
         discretization_img = self.initialize_weights(low=0, high=np.pi/10, dims=(embedding_size, embedding_size))
         discretization_weights = discretization_real * T.exp(discretization_img * 1j)
 
