@@ -189,7 +189,7 @@ class SSMTrainer():
         # backpropagation
         self.optimizer.zero_grad()
         loss.backward(retain_graph=True)
-        #T.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=1.0)
+        T.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         # loss is returned for data collection
