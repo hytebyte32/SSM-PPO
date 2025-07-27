@@ -4,6 +4,7 @@ sys.path.append(os.path.abspath('..'))
 
 import torch as T
 import torch.optim as optim
+import torch.nn as nn
 import pandas as pd
 from recurrent_network import RecurrentNetwork
 from torch.distributions import Categorical
@@ -56,14 +57,20 @@ class SSMTrainer():
         self.render_env._max_episode_steps = max_episode_time
 
         self.device = device
+
+        self.input_size = self.env.observation_space.shape[0]
+        self.output_size = self.env.action_space.n
         
+        # vectorizing envs is out of my pay grade (which is nothing)
+        self.batch_size = 1
+
         # initializing ssm
         self.agent = RecurrentNetwork(
             embedding_size=embedding_size,
             state_space_size=state_space_size,
-            input_size=self.env.observation_space.shape[0],
-            output_size=self.env.action_space.n,
-            batch_size=1,
+            input_size=self.input_size,
+            output_size=self.output_size,
+            batch_size=self.batch_size,
             device=device,
             network_name=dir
         ).to(device)
@@ -73,85 +80,113 @@ class SSMTrainer():
         self.reward_threshold = reward_threshold
         self.reward_target = reward_target
         self.running_baseline = 0
-        self.training_steps = 0
+        self.total_training_steps = 0
+        self.episode = 0
+        # initialize at -inf for envs that can have negative rewards
+        self.validation_reward = -float('inf')
         
 
         self.gamma = gamma
         self.entropy_coefficient = entropy_coefficient
-        self.validation_length = validation_length    
-
-        
-               
-    
-    def train(self, verbose=True):
-        '''
-        verbose:
-        controls if training loop will save gradients for debugging and model analysis
-        '''
+        self.validation_length = validation_length
 
         # initializes dictionaries to store gradient and training information
         self.gradient_data = {name:[] for name, _ in self.agent.named_parameters()}
         self.training_data = {'training_steps':[], 'training_reward':[], 'validation_reward':[], 'loss':[]}
-        # reset + init incase training is run again without resarting
-        self.running_baseline = 0
+
+
+    def play_episode(self, training=True, render_mode=False):
+        # configs env for rendering if set
+        if render_mode:
+            env = self.render_env
+        else:
+            env = self.env
+
+        obs, _ = env.reset()
+
+        h_t = self.agent.get_inital_hidden_state()
+        h_t = h_t.unsqueeze(0).expand(self.batch_size, -1, -1)
+
+        done=False
+        total_reward = 0
         training_steps = 0
-        episode = 0
-        avg_reward = 0
-
-        # main training loop
-        while avg_reward < self.reward_target:
-
-            # reset environment for next episode
-            obs, _ = self.env.reset()
-            done = False
-            total_reward = 0
-            self.avg_reward = 0.0
-            h_t = None
-
-            episode += 1
-
-            log_probs = []
-            rewards = []
-            entropies = []
-
-            # looping through entire loop
-            while not done:
-                # changes the shape of the observation into (B, L, F), which is the allowable shape of the ssm model
-                obs_tensor = T.tensor(obs, dtype=T.float32, device=self.device).unsqueeze(0).unsqueeze(0)
-                h_t, y_t = self.agent(obs_tensor, h_t, embeddings_only=False)
-
-                # calculating actions and loss variables
+        log_probs = []
+        rewards = []
+        entropies = []
+        
+        # looping through entire loop
+        while not done:
+            # changes the shape of the observation into (B, L, F), which is the allowable shape of the ssm model
+            obs_tensor = T.tensor(obs, dtype=T.float32, device=self.device).unsqueeze(0).unsqueeze(0)
+            h_t, y_t = self.agent(obs_tensor, h_t, embeddings_only=False)
+            
+            # calculating stochasitc actions for training
+            if training:
                 action, log_prob, entropy = self.__select_action_from_logits(y_t)
                 log_probs.append(log_prob)
                 entropies.append(entropy)
-
-                obs, reward, terminated, truncated, _ = self.env.step(action)
-
-                # appends time step information
-                done = terminated or truncated
-                rewards.append(reward)
-                total_reward += reward
                 training_steps += 1
 
+            # deterministic actions for validation / replay
+            else:
+                logits = y_t.squeeze(0).squeeze(0)
+                action = T.argmax(logits).item()
+
+            obs, reward, terminated, truncated, _ = env.step(action)
+
+            # appends time step information
+            done = terminated or truncated
+            rewards.append(reward)
+            total_reward += reward
+
+            if render_mode:
+                env.render()
+            
+        if training:
+            self.episode += 1
+            self.total_training_steps += training_steps
+            loss_vars = (log_probs, rewards, entropies)
+            return loss_vars, total_reward
+        
+        else:
+            return total_reward
+
+    def train(self, verbose=True):
+        '''
+        verbose:
+        controls if training loop will save gradients for debugging and model analysis
+        '''       
+
+        # main training loop
+        while self.validation_reward < self.reward_target:
+
+            loss_vars, training_reward = self.play_episode(training=True)
+
             # calculates loss
-            loss = self.__learn_from_episode(log_probs, rewards, entropies)
+            loss = self.__calculate_loss(*loss_vars)
+
+            # backpropagation
+            self.optimizer.zero_grad()
+            loss.backward(retain_graph=True)
+            T.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=1.0)
+            self.optimizer.step()
 
             # checks if the total reward is worthy of wasting compute to validate
-            if total_reward >= self.reward_threshold:
-                avg_reward, episodes_lasted = self.__evaluate_policy()
-                print(f"Episode {episode}: Reward = {total_reward} | Validation Avg = {avg_reward:.2f} from {episodes_lasted} episodes ")
+            if training_reward >= self.reward_threshold:
+                self.validation_reward, episodes_lasted = self.__evaluate_policy()
+                print(f"Episode {self.episode}: Reward = {training_reward} | Validation Avg = {self.validation_reward:.2f} from {episodes_lasted} episodes ")
             else:
-                print(f"Episode {episode}: Reward = {total_reward}")
+                self.validation_reward = training_reward
+                print(f"Episode {self.episode}: Reward = {training_reward}")
 
-            
             # saves data to dictionaries
             if verbose:
                 for name, param in self.agent.named_parameters():
                     self.gradient_data[name].append(param.grad.norm().item())
 
-                self.training_data['training_steps'].append(training_steps)
-                self.training_data['training_reward'].append(total_reward)
-                self.training_data['validation_reward'].append(avg_reward)
+                self.training_data['training_steps'].append(self.total_training_steps)
+                self.training_data['training_reward'].append(training_reward)
+                self.training_data['validation_reward'].append(self.validation_reward)
                 self.training_data['loss'].append(loss.item())
 
     def __select_action_from_logits(self, logits_3d):
@@ -164,7 +199,7 @@ class SSMTrainer():
         action = dist.sample()
         return action.item(), dist.log_prob(action), dist.entropy()
 
-    def __learn_from_episode(self, log_probs, rewards, entropies):
+    def __calculate_loss(self, log_probs, rewards, entropies):
         # standard policy gradient loss function
 
         # calculating returns
@@ -186,22 +221,16 @@ class SSMTrainer():
         entropy_bonus = T.stack(entropies).sum()
         loss = policy_loss - self.entropy_coefficient * entropy_bonus
 
-        # backpropagation
-        self.optimizer.zero_grad()
-        loss.backward(retain_graph=True)
-        T.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=1.0)
-        self.optimizer.step()
-
-        # loss is returned for data collection
         return loss
 
     def __evaluate_policy(self):
         # just runs an episode n # of times as specified during initialization. Uses argmax to get deterministic actions
         total_reward = 0
         for episode in range(self.validation_length):
-            obs, _ = self.env.reset()
+            '''obs, _ = self.env.reset()
             done = False
-            h_t = None
+            h_t = self.agent.get_inital_hidden_state()
+            h_t = h_t.unsqueeze(0).expand(self.batch_size, -1, -1)
             while not done:
                 # disables gradients since we dont want to train off the validation data
                 with T.no_grad():
@@ -210,36 +239,23 @@ class SSMTrainer():
                     action = T.argmax(y_t.squeeze(0).squeeze(0)).item()
                 obs, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
-                total_reward += reward
+                total_reward += reward'''
+            
+            with T.no_grad():
+                total_reward += self.play_episode(training=False)
 
         # ends validation early if any of the episodes drop below the target reward
             if total_reward / (episode + 1) < self.reward_target:
                 return total_reward / (episode + 1), episode+1
+            
         return total_reward / self.validation_length, episode+1
 
     def replay_live(self):
         # runs an episode live to demo training results
-        obs, _ = self.render_env.reset()
-        done = False
-        h_t = None
-        total_reward = 0
-        step = 0
-
         self.agent.eval()
 
-        while not done:
-            obs_tensor = T.tensor(obs, dtype=T.float32, device=self.device).unsqueeze(0).unsqueeze(0)
-            # disables gradients since this is a demo
-            with T.no_grad():
-                h_t, y_t = self.agent(obs_tensor, h_t, embeddings_only=False)
-                logits = y_t.squeeze(0).squeeze(0)
-                action = T.argmax(logits).item()
-
-            obs, reward, terminated, truncated, _ = self.render_env.step(action)
-            done = terminated or truncated
-            total_reward += reward
-            step += 1
-            self.render_env.render()
+        with T.no_grad():
+            total_reward = self.play_episode(training=False, render_mode=True)
         
         self.agent.train()
         self.render_env.close()
@@ -252,4 +268,48 @@ class SSMTrainer():
         compiled_data = pd.concat([gradient_data, training_data], axis=1)
         return compiled_data
 
-        
+
+class ICM(nn.Module):
+    def __init__(self, state_space_size, embedding_size, lr):
+        super(ICM, self).__init__()
+
+        # accepts input h_t and y_t to predict the next hidden state h_t+1'
+        self.forward_curiosity = nn.Sequential(
+            nn.Linear(state_space_size + embedding_size, state_space_size, dtype=T.complex64),
+            nn.SiLU(),
+            nn.Linear(state_space_size, state_space_size, dtype=T.complex64)
+        )
+
+        # accepts input h_t and h_t+1 to predict the output y_t' that was used to get here
+        self.inverse_curiosity = nn.Sequential(
+            nn.Linear(state_space_size*2, state_space_size, dtype=T.complex64),
+            nn.SiLU(),
+            # state_space_size -> state_space_size, since we will use the ssm's internal feature compressor
+            nn.Linear(state_space_size, state_space_size, dtype=T.complex64)
+        )
+
+        self.optimizer = optim.AdamW(list(self.forward_curiosity.parameters()) + list(self.inverse_curiosity.parameters()), lr=lr, weight_decay=1e-3)
+        self.mse_loss = nn.MSELoss()
+    
+    # compression_fn is an input variable since the internals change with gradient updates
+    def forward(self, h_prev, h_t, y_prev, compression_fn):       
+        # detaches inputs to prevent curiosity module from updating ssm parameters
+        h_prev_d = h_prev.detach()
+        h_t_d = h_t.detach()
+        y_complex_d = T.complex(y_prev, T.zeros_like(y_prev)).detach()
+
+        # computes the next hidden state
+        h_next = self.forward_curiosity(T.concat(tensors=(h_prev_d, y_complex_d), dim=-1))
+
+        # computes interpolates the action taken to current hidden state
+        y_embed = self.inverse_curiosity(T.concat(tensors=(h_prev_d, h_t_d), dim=-1))
+        y_pred = compression_fn(y_embed.detach())
+
+        # computes losses
+        exploration_signal = self.mse_loss(h_next, h_t_d)
+        inverse_loss = self.mse_loss(y_pred, y_prev.detach())
+        total_curiosity_loss = exploration_signal + inverse_loss
+
+        return exploration_signal, total_curiosity_loss
+
+
