@@ -1,1 +1,4 @@
-Should note that you would likely not see the model solve this quickly. From my testing, it takes ~ 20,000 - 25,000 time steps to solve
+- Model takes approximately 2.5k - 30k time steps to solve
+- On average, you would likely see solving time between 6k - 12k time steps
+- The model current ends validation early to continue training as soon as a single validation episode falls below the target reward. This is to help ensure model robustness
+- If you remove the strict condition enforcing all validation scores to be above the target threshold you would likely be able to solve with much lower time steps at the cost of longer compute (model will continue validating scores even if the average falls well below the required passing threshold)
