@@ -83,7 +83,7 @@ class SSMTrainer():
         self.total_training_steps = 0
         self.episode = 0
         # initialize at -inf for envs that can have negative rewards
-        self.validation_reward = -float('inf')
+        #self.validation_reward = -float('inf')
         
 
         self.gamma = gamma
@@ -92,7 +92,7 @@ class SSMTrainer():
 
         # initializes dictionaries to store gradient and training information
         self.gradient_data = {name:[] for name, _ in self.agent.named_parameters()}
-        self.training_data = {'training_steps':[], 'training_reward':[], 'validation_reward':[], 'loss':[]}
+        self.training_data = {'training_steps':[], 'training_reward':[], 'validation_reward':[], 'loss':[], 'validation_episodes':[]}
 
 
     def play_episode(self, training=True, render_mode=False):
@@ -156,9 +156,10 @@ class SSMTrainer():
         verbose:
         controls if training loop will save gradients for debugging and model analysis
         '''       
+        passed = False
 
         # main training loop
-        while self.validation_reward < self.reward_target:
+        while not passed:
 
             loss_vars, training_reward = self.play_episode(training=True)
 
@@ -173,10 +174,10 @@ class SSMTrainer():
 
             # checks if the total reward is worthy of wasting compute to validate
             if training_reward >= self.reward_threshold:
-                self.validation_reward, episodes_lasted = self.__evaluate_policy()
-                print(f"Episode {self.episode}: Reward = {training_reward} | Validation Avg = {self.validation_reward:.2f} from {episodes_lasted} episodes ")
+                validation_reward, episodes_lasted, passed = self.__evaluate_policy()
+                print(f"Episode {self.episode}: Reward = {training_reward} | Validation Avg = {validation_reward:.2f} from {episodes_lasted} episodes ")
             else:
-                self.validation_reward = training_reward
+                validation_reward = training_reward
                 print(f"Episode {self.episode}: Reward = {training_reward}")
 
             # saves data to dictionaries
@@ -186,8 +187,9 @@ class SSMTrainer():
 
                 self.training_data['training_steps'].append(self.total_training_steps)
                 self.training_data['training_reward'].append(training_reward)
-                self.training_data['validation_reward'].append(self.validation_reward)
+                self.training_data['validation_reward'].append(validation_reward)
                 self.training_data['loss'].append(loss.item())
+                self.training_data['validation_episodes'].append(episodes_lasted)
 
     def __select_action_from_logits(self, logits_3d):
         '''
@@ -227,28 +229,15 @@ class SSMTrainer():
         # just runs an episode n # of times as specified during initialization. Uses argmax to get deterministic actions
         total_reward = 0
         for episode in range(self.validation_length):
-            '''obs, _ = self.env.reset()
-            done = False
-            h_t = self.agent.get_inital_hidden_state()
-            h_t = h_t.unsqueeze(0).expand(self.batch_size, -1, -1)
-            while not done:
-                # disables gradients since we dont want to train off the validation data
-                with T.no_grad():
-                    obs_tensor = T.tensor(obs, dtype=T.float32, device=self.device).unsqueeze(0).unsqueeze(0)
-                    h_t, y_t = self.agent(obs_tensor, h_t, embeddings_only=False)
-                    action = T.argmax(y_t.squeeze(0).squeeze(0)).item()
-                obs, reward, terminated, truncated, _ = self.env.step(action)
-                done = terminated or truncated
-                total_reward += reward'''
-            
             with T.no_grad():
-                total_reward += self.play_episode(training=False)
+                episode_reward = self.play_episode(training=False)
+                total_reward += episode_reward
 
         # ends validation early if any of the episodes drop below the target reward
-            if total_reward / (episode + 1) < self.reward_target:
-                return total_reward / (episode + 1), episode+1
+            if episode_reward < self.reward_target:
+                return total_reward / (episode + 1), episode+1, False
             
-        return total_reward / self.validation_length, episode+1
+        return total_reward / self.validation_length, episode+1, True
 
     def replay_live(self):
         # runs an episode live to demo training results
