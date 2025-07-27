@@ -11,7 +11,7 @@ from torch.distributions import Categorical
 import gymnasium as gym
 
 class SSMTrainer():
-    def __init__(self, env, embedding_size, state_space_size, reward_threshold, reward_target, lr, gamma, entropy_coefficient, validation_length, dir, max_episode_time, device):
+    def __init__(self, env, embedding_size, state_space_size, reward_threshold, reward_target, lr, gamma, entropy_coefficient, validation_length, dir, max_episode_time, strict_mode, device):
 
         '''
         env: 
@@ -57,6 +57,8 @@ class SSMTrainer():
         self.render_env._max_episode_steps = max_episode_time
 
         self.device = device
+
+        self.strict_mode = strict_mode
 
         self.input_size = self.env.observation_space.shape[0]
         self.output_size = self.env.action_space.n
@@ -178,6 +180,7 @@ class SSMTrainer():
                 print(f"Episode {self.episode}: Reward = {training_reward} | Validation Avg = {validation_reward:.2f} from {episodes_lasted} episodes ")
             else:
                 validation_reward = training_reward
+                episodes_lasted = 0
                 print(f"Episode {self.episode}: Reward = {training_reward}")
 
             # saves data to dictionaries
@@ -233,11 +236,20 @@ class SSMTrainer():
                 episode_reward = self.play_episode(training=False)
                 total_reward += episode_reward
 
-        # ends validation early if any of the episodes drop below the target reward
-            if episode_reward < self.reward_target:
-                return total_reward / (episode + 1), episode+1, False
-            
-        return total_reward / self.validation_length, episode+1, True
+            avg_reward = total_reward / (episode + 1)
+
+            # ends validation early if any of the episodes drop below the target reward (strict)
+            if episode_reward < self.reward_target and self.strict_mode:
+                return avg_reward, episode+1, False
+            '''
+            I cant think of a clean way to calculate if the avg will be above the target given the remaining episodes
+            without hardcoding max reward. I want to use the same class for other envs aswell, so going to run with avg cutoff for now.
+            '''
+            # less strict validation ends early if the avg is below the target reward
+            if avg_reward < self.reward_target and not self.strict_mode:
+                return avg_reward, episode+1, False
+
+        return avg_reward, self.validation_length, True
 
     def replay_live(self):
         # runs an episode live to demo training results
