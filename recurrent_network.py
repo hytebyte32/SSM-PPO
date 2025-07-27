@@ -231,11 +231,16 @@ class RecurrentNetwork(nn.Module):
         # transfer all parameters into gpu if possible
         self.to(device=self.device)
 
-    def recurrent_step(self, x_t, h_t, embeddings_only, state_transition_matrix):
+    def get_inital_hidden_state(self):
+        # calculates and returns the initial hidden state
+        h_init = self.recurrent_block.construct_complex_matrix(
+            real_values=self.recurrent_block.real_hidden_matrix,
+            img_values=self.recurrent_block.img_hidden_matrix,
+        )
+        
+        return h_init
 
-        # batch size of the current input. Used for variable batch sizes during inference and training
-        
-        
+    def recurrent_step(self, x_t, h_t, embeddings_only, state_transition_matrix):
         # permute inputs to be of shape (L, B, D)
         x_permuted_t = x_t.permute(1,0,2) 
         inputs_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
@@ -263,7 +268,7 @@ class RecurrentNetwork(nn.Module):
         else:
             return h_t, self.recurrent_block.state_prediction(outputs)
     
-    def forward(self, x_t, h_t=None, embeddings_only=True):
+    def forward(self, x_t, h_t, embeddings_only=True):
         '''
         embeddings_only: controls if raw output embeddings or usable outputs should be returned
         '''
@@ -271,18 +276,8 @@ class RecurrentNetwork(nn.Module):
             real_values=self.recurrent_block.real_transition_matrix,
             img_values=self.recurrent_block.img_transition_matrix
         )
-        if h_t is None:
-            batch_size_t = x_t.shape[0]
-            h_in = self.recurrent_block.construct_complex_matrix(
-                real_values=self.recurrent_block.real_hidden_matrix,
-                img_values=self.recurrent_block.img_hidden_matrix,
-            )
-            
-            h_in = h_in.unsqueeze(0).expand(batch_size_t, -1, -1)
-        else:
-            h_in = h_t
-
-        output = self.recurrent_step(x_t, h_in, embeddings_only, state_transition_matrix)
+        
+        output = self.recurrent_step(x_t, h_t, embeddings_only, state_transition_matrix)
         #output = checkpoint(self.recurrent_step, x_t, h_in, embeddings_only)
         
         return output
