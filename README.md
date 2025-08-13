@@ -67,6 +67,7 @@ Maps the processed output to the next-step prediction.
 - Implement demos for classic control environments (Acrobot, Mountain Car, and Pendulum)
 - Implement demos for box2d (bipedal walker, car racing, lunar lander)
 - Implement demos for MuJoCo environments
+- Convert everything into C and cuda kernels for more efficient scan
 
 ---
 
