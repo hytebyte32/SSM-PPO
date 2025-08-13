@@ -106,6 +106,7 @@ class RecurrentBlock(nn.Module):
         self.mag_embedding.compile()
 
         # embeds the imaginary output sin, cos, and theta derived from the phase angle
+        # 
         self.phase_embedding = nn.Sequential(
             nn.Linear(embedding_size*3, state_space_size, bias=False, dtype=T.float32),
             nn.Tanh()
@@ -124,6 +125,9 @@ class RecurrentBlock(nn.Module):
         self.output_compression.compile()
 
         # next state prediction
+        '''
+        temporary MLP until PPO decision head is implemented
+        '''
         self.state_prediction = nn.Sequential(
             nn.Linear(embedding_size, embedding_size//2, dtype=T.float32),
             nn.LayerNorm(embedding_size//2),
@@ -240,48 +244,56 @@ class RecurrentNetwork(nn.Module):
         
         return h_init
 
-    def recurrent_step(self, x_t, h_t, embeddings_only, state_transition_matrix):
-        # permute inputs to be of shape (L, B, D)
-        x_permuted_t = x_t.permute(1,0,2) 
-        inputs_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
+    def recurrent_step(self, inputs_t, h_t, state_transition_matrix):
+        x_gated_t, delta_t, B_t, C_t, output_weights = inputs_t
 
-        # preallocate memory for outputs
-        outputs = T.empty_like(input=inputs_t[0].permute(1,0,2), dtype=T.complex64, device=self.device) # (B, L, D)
+        # calculate hidden next hidden state
+        h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t, state_transition_matrix)
 
-        for idx, input_t in enumerate(zip(*inputs_t)):
-            x_gated_t, delta_t, B_t, C_t, output_weights = input_t
-
-            # calculate hidden next hidden state
-            h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t, state_transition_matrix)
-
-            # calculate output
-            y_t = output_weights * (C_t.unsqueeze(1) * h_t).sum(dim=-1) + (1 - output_weights) * x_gated_t
-            
-            # save output
-            outputs[:, idx, :] = y_t
-
+        # calculate output
+        output_embedding = output_weights * (C_t.unsqueeze(1) * h_t).sum(dim=-1) + (1 - output_weights) * x_gated_t
+               
+        return output_embedding, h_t
         
-        outputs = self.recurrent_block.post_process_output(outputs)
-
-        if embeddings_only is True:
-            return h_t, outputs
-        else:
-            return h_t, self.recurrent_block.state_prediction(outputs)
     
-    def forward(self, x_t, h_t, embeddings_only=True):
-        '''
-        embeddings_only: controls if raw output embeddings or usable outputs should be returned
-        '''
+    def forward(self, x_t, h_t):
         state_transition_matrix = self.recurrent_block.construct_complex_matrix(
             real_values=self.recurrent_block.real_transition_matrix,
             img_values=self.recurrent_block.img_transition_matrix
         )
+
+        # permute inputs to be of shape (L, B, D)
+        x_permuted_t = x_t.permute(1,0,2) 
+        input_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
+
+
+        # preallocate memory for outputs
+        output_embeddings = T.empty_like(input=input_t[0].permute(1,0,2), dtype=T.complex64, device=self.device) # (B, L, D)
         
-        output = self.recurrent_step(x_t, h_t, embeddings_only, state_transition_matrix)
+        # online mode
+        if len(x_permuted_t) == 1:
+            output_embedding, h_t = self.recurrent_step(input_t, h_t, state_transition_matrix)
+            output_embeddings[:, 0, :] = output_embedding
+        
+        # sequence mode
+        else:
+           for idx, inputs_t in enumerate(zip(*input_t)):
+
+                output_embedding, h_t = self.recurrent_step(inputs_t, h_t, state_transition_matrix)
+                output_embeddings[:, idx, :] = output_embedding
+
         #output = checkpoint(self.recurrent_step, x_t, h_in, embeddings_only)
         
-        return output
 
+        output_embeddings = self.recurrent_block.post_process_output(output_embeddings)
+
+        return output_embeddings, h_t
+    
+    def pred(self, output_embeddings):
+        y_t = self.recurrent_block.state_prediction(output_embeddings)
+
+        return y_t
+    
     def save_checkpoint(self):
         T.save(self.state_dict(), self.checkpoint_file)
 
