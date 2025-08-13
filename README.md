@@ -44,7 +44,7 @@ Maps the processed output to the next-step prediction.
    The hidden state is updated using the complex state transition matrix and input filters.
 
 4. **Output Generation**  
-   The output is filtered, processed for magnitude and phase, and compressed.
+   The output is filtered, processed for magnitude and phase, and compressed. This converts complex state space into a real valued output while preserving complex dynamics.
 
 5. **Prediction**  
    The processed output is used to predict the next input or action.
