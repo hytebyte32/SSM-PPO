@@ -60,6 +60,16 @@ Maps the processed output to the next-step prediction.
 
 ---
 
+## TODO:
+
+- Implement the PPO decision head
+- Implement curiosity module for spare environments
+- Implement demos for classic control environments (Acrobot, Mountain Car, and Pendulum)
+- Implement demos for box2d (bipedal walker, car racing, lunar lander)
+- Implement demos for MuJoCo environments
+
+---
+
 > **Inspired by**  
 > *Albert Gu, Tri Dao, et al.*  
 > [**Mamba: Linear-Time Sequence Modeling with Selective State Spaces**](https://arxiv.org/abs/2312.00752)  
