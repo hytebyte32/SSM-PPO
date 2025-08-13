@@ -120,7 +120,8 @@ class SSMTrainer():
         while not done:
             # changes the shape of the observation into (B, L, F), which is the allowable shape of the ssm model
             obs_tensor = T.tensor(obs, dtype=T.float32, device=self.device).unsqueeze(0).unsqueeze(0)
-            h_t, y_t = self.agent(obs_tensor, h_t, embeddings_only=False)
+            y_embedded, h_t = self.agent(obs_tensor, h_t)
+            y_t = self.agent.pred(y_embedded)
             
             # calculating stochasitc actions for training
             if training:
@@ -271,6 +272,11 @@ class SSMTrainer():
 
 
 class ICM(nn.Module):
+    '''
+    ICM (Intrinsic Curiosity Module) is responsible for punishing the model if the next state is very predictable,
+    which likely means that the model is stuck in some sort of local minima. By punishing predictable next states, the model
+    will be forced to explore its environment and hopefully come up with a more optimal solution. 
+    '''
     def __init__(self, state_space_size, embedding_size, lr):
         super(ICM, self).__init__()
 
