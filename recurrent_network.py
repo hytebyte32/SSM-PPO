@@ -137,8 +137,7 @@ class RecurrentBlock(nn.Module):
         self.state_prediction.compile()
 
     # calculates the recurrent hidden state
-    def forward(self, x_gated_t, delta_t, B_t, h_prev, state_transition_matrix):
-        
+    def forward(self, x_gated_t, delta_t, B_t, h_prev, state_transition_matrix):       
         A_prime_t = T.exp(-delta_t.unsqueeze(2) * state_transition_matrix.unsqueeze(0))
         B_prime_t = delta_t.unsqueeze(2) * B_t.unsqueeze(1) 
         h_prime_t = A_prime_t * h_prev + B_prime_t * x_gated_t.unsqueeze(-1)
@@ -263,21 +262,23 @@ class RecurrentNetwork(nn.Module):
         )
 
         # permute inputs to be of shape (L, B, D)
-        x_permuted_t = x_t.permute(1,0,2) 
-        input_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
+        x_permuted_t = x_t.permute(1,0,2)
+        inputs_t = self.recurrent_block.pre_process_inputs(x_permuted_t)
 
 
         # preallocate memory for outputs
-        output_embeddings = T.empty_like(input=input_t[0].permute(1,0,2), dtype=T.complex64, device=self.device) # (B, L, D)
+        output_embeddings = T.empty_like(input=inputs_t[0].permute(1,0,2), dtype=T.complex64, device=self.device) # (B, L, D)
         
         # online mode
         if len(x_permuted_t) == 1:
+            # converts (L, B, D) -> (B, D) since L=1 in online mode
+            input_t = [t.squeeze(0) for t in inputs_t]
             output_embedding, h_t = self.recurrent_step(input_t, h_t, state_transition_matrix)
             output_embeddings[:, 0, :] = output_embedding
         
         # sequence mode
         else:
-           for idx, inputs_t in enumerate(zip(*input_t)):
+           for idx, input_t in enumerate(zip(*inputs_t)):
 
                 output_embedding, h_t = self.recurrent_step(inputs_t, h_t, state_transition_matrix)
                 output_embeddings[:, idx, :] = output_embedding
