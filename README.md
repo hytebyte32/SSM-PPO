@@ -8,7 +8,7 @@ The **SSM-PPO** model implements a custom recurrent neural network block inspire
 
 | Component                | Description |
 |--------------------------|-------------|
-| **ShiftedSigmoid**       | A learnable sigmoid activation with trainable smoothness, used for gating mechanisms. |
+| **ShiftedSigmoid**       | A learnable sigmoid activation with trainable smoothness, used for gating mechanisms. Centered around zero to make gating outputs bounded|
 | **RecurrentBlock**       | The core module that manages the recurrent state and transitions. |
 | **State Transition Matrix** | Constructed from learnable magnitude and phase parameters, forming a complex-valued matrix for hidden state evolution. |
 | **Hidden State Initialization** | Learnable parameters for the initial hidden state, also complex-valued. |
