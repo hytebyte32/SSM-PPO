@@ -63,7 +63,7 @@ Maps the processed output to the next-step prediction.
 ## TODO:
 
 - Implement the PPO decision head
-- ~~Implement curiosity module for spare environments~~ (done!)
+- ~~Implement curiosity module for sparse environments~~ (done)
 - Implement demos for classic control environments (Acrobot, Mountain Car, and Pendulum)
 - Implement demos for box2d (bipedal walker, car racing, lunar lander)
 - Implement demos for MuJoCo environments
