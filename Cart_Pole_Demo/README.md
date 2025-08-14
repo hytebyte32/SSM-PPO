@@ -1,4 +1,7 @@
-- Model takes approximately 2.5k - 30k time steps to solve
-- On average, you would likely see solving time between 6k - 12k time steps
+- <s>Model takes approximately 2.5k - 30k time steps to solve<s>
+- <s>On average, you would likely see solving time between 6k - 12k time steps<s>
+- Implementing experimental lr scheduler improves solving time down to 2.5k - 18k
+- On average, new solving time is between 4k - 8k time steps
 - The model current ends validation early to continue training as soon as a single validation episode falls below the target reward. This is to help ensure model robustness
+- The module currently uses the number of validation episodes survived to modulate the learning rate between 10% to 100%
 - If you remove the strict condition enforcing all validation scores to be above the target threshold you would likely be able to solve with much lower time steps at the cost of longer compute (model will continue validating scores even if the average falls well below the required passing threshold)
