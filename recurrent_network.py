@@ -18,6 +18,42 @@ class ShiftedSigmoid(nn.Module):
     def forward(self, x):
         y = nn.Sigmoid()(self.smoothness * x - self.shift)
         return y
+    
+
+### output processing
+class OuputCompressionModule(nn.Module):
+    def __init__(self, embedding_size, state_space_size, device):
+        super(OuputCompressionModule, self).__init__()
+
+        # embeds the output magnitude
+        self.mag_embedding = nn.Linear(embedding_size, state_space_size, bias=False, dtype=T.float32)
+
+        # embeds the imaginary output sin, cos, and theta derived from the phase angle
+        # 
+        self.phase_embedding = nn.Sequential(
+            nn.Linear(embedding_size*3, state_space_size, bias=False, dtype=T.float32),
+            nn.Tanh()
+        )
+
+        # compresses the output from state space size back into embedding size
+        self.output_compression = nn.Sequential(
+            nn.Linear(state_space_size, state_space_size//2, dtype=T.float32),
+            nn.LayerNorm(state_space_size//2),
+            nn.SiLU(),
+            nn.Linear(state_space_size//2, embedding_size, dtype=T.float32),
+            nn.SiLU()
+        )
+
+        self.to(device)
+
+    def forward(self, mag_t, phase_t):
+        # converts the complex y_t output into real values
+        mag_proj = self.mag_embedding(mag_t)
+        phase_proj = self.phase_embedding(phase_t)
+        combined = mag_proj * phase_proj
+        y_prime_t = self.output_compression(combined)
+
+        return y_prime_t
 
 class RecurrentBlock(nn.Module):
     def __init__(
@@ -97,32 +133,12 @@ class RecurrentBlock(nn.Module):
         # output filter
         self.C_t = nn.Linear(embedding_size, state_space_size, bias=False, dtype=T.complex64)
 
-        ### output processing
-        # normalizes the exponential channel from imaginary portion of the outputs
-        self.norm = nn.LayerNorm(embedding_size)
-
-        # embeds the output magnitude
-        self.mag_embedding = nn.Linear(embedding_size, state_space_size, bias=False, dtype=T.float32)
-        self.mag_embedding.compile()
-
-        # embeds the imaginary output sin, cos, and theta derived from the phase angle
-        # 
-        self.phase_embedding = nn.Sequential(
-            nn.Linear(embedding_size*3, state_space_size, bias=False, dtype=T.float32),
-            nn.Tanh()
-        )
-        self.phase_embedding.compile()
-
-        # compresses the output from state space size back into embedding size
-        self.output_compression = nn.Sequential(
-            nn.Linear(state_space_size, state_space_size//2, dtype=T.float32),
-            nn.LayerNorm(state_space_size//2),
-            nn.SiLU(),
-            nn.Linear(state_space_size//2, embedding_size, dtype=T.float32),
-            nn.SiLU()
-        )
-
+        # compresses imaginary state space into real valued embeddings
+        self.output_compression = OuputCompressionModule(embedding_size, state_space_size, device)
         self.output_compression.compile()
+
+        # normalizes the exponential channel from imaginary portion of the outputs
+        self.norm = nn.LayerNorm(embedding_size, elementwise_affine=False)
 
         # next state prediction
         '''
@@ -135,6 +151,8 @@ class RecurrentBlock(nn.Module):
             nn.Linear(embedding_size//2, output_size, dtype=T.float32),
         )
         self.state_prediction.compile()
+
+        self.to(device)
 
     # calculates the recurrent hidden state
     def forward(self, x_gated_t, delta_t, B_t, h_prev, state_transition_matrix):       
@@ -154,14 +172,7 @@ class RecurrentBlock(nn.Module):
 
         # combines phase features
         phase_t = T.concat(tensors=(exp_theta_t, cos_t, sin_t), dim=-1)
-        # converts the complex y_t output into real values
-        mag_proj = self.mag_embedding(mag_t)
-        phase_proj = self.phase_embedding(phase_t)
-        combined = mag_proj * phase_proj
-        
-        y_prime_t = self.output_compression(combined)
-
-        return y_prime_t
+        return mag_t, phase_t
     
     def pre_process_inputs(self, x_t):
         x_complex_t = T.complex(x_t, T.zeros_like(x_t))
@@ -206,7 +217,7 @@ class RecurrentNetwork(nn.Module):
             output_size,
             batch_size,
             device,
-            chkpt_dir='temp/ppo',
+            chkpt_dir='temp/',
             network_name='ssm'
             ):
         super(RecurrentNetwork, self).__init__()
@@ -246,7 +257,7 @@ class RecurrentNetwork(nn.Module):
     def recurrent_step(self, inputs_t, h_t, state_transition_matrix):
         x_gated_t, delta_t, B_t, C_t, output_weights = inputs_t
 
-        # calculate hidden next hidden state
+        # calculate next hidden state
         h_t = self.recurrent_block(x_gated_t, delta_t, B_t, h_t, state_transition_matrix)
 
         # calculate output
@@ -287,6 +298,7 @@ class RecurrentNetwork(nn.Module):
         
 
         output_embeddings = self.recurrent_block.post_process_output(output_embeddings)
+        output_embeddings = self.recurrent_block.output_compression(*output_embeddings)
 
         return output_embeddings, h_t
     
