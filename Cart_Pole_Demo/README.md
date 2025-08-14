@@ -1,5 +1,5 @@
-- -Model takes approximately 2.5k - 30k time steps to solve-
-- -On average, you would likely see solving time between 6k - 12k time steps-
+- ~~Model takes approximately 2.5k - 30k time steps to solve~~
+- ~~On average, you would likely see solving time between 6k - 12k time steps~~
 - Implementing experimental lr scheduler improves solving time down to 2.5k - 18k
 - On average, new solving time is between 4k - 8k time steps
 - The model current ends validation early to continue training as soon as a single validation episode falls below the target reward. This is to help ensure model robustness
